@@ -1,0 +1,118 @@
+#!/usr/bin/env python
+"""
+Usage: yum-notify [options]
+
+Options:
+  -c, --changelog            Include first line of the changelog
+  -m, --mailto ADDR          Send to ADDR instead of stdout
+  -v, --version              Show program's version number and exit
+  -h, --help                 Show this help message and exit
+"""
+from email.mime.text import MIMEText
+import optparse
+import socket
+import subprocess
+import sys
+
+import yum
+
+
+__version__ = '1.0.0'
+
+
+def echo(msg=''):
+    msg = '{0}\n'.format(msg).decode('utf-8', 'replace')
+    sys.stdout.write(msg)
+    sys.stdout.flush()
+
+
+def fail(msg):
+    msg = '{0}\n'.format(msg).decode('utf-8', 'replace')
+    sys.stderr.write(msg)
+    sys.stderr.flush()
+    sys.exit(1)
+
+
+def helper(*args, **kwargs):
+    echo(__doc__.strip())
+    sys.exit(0)
+
+
+def version(*args):
+    echo('yum-notifiy %s' % __version__)
+    sys.exit(0)
+
+
+class YumNotify(object):
+    def __init__(self):
+        self._setup_options()
+        self._setup_yum()
+
+    def _setup_options(self):
+        parser = optparse.OptionParser()
+        parser.remove_option('--help')
+        parser.add_option('-h', '--help', action='callback', callback=helper)
+        parser.add_option('-v', '--version', action='callback', callback=version)
+        parser.add_option('-c', '--changelog', action='store_true')
+        parser.add_option('-m', '--mailto', dest='mailto', default=None)
+        self.options, self.args = parser.parse_args()
+
+    def _setup_yum(self):
+        self.yb = yum.YumBase()
+        # Silences the "Loaded plugins: foo" messages
+        self.yb.preconf.debuglevel = 0
+
+    def get_changelog(self, pkg):
+        cl = pkg.changelog[0][-1]
+        cl = cl.splitlines()[0].strip().lstrip('-').strip()
+        return cl
+
+    def get_package(self, pkg):
+        return self.yb.rpmdb.searchNevra(name=pkg.name)[0]
+
+    def get_updates(self):
+        return self.yb.doPackageLists(pkgnarrow='updates').updates
+
+    def notify(self, pkgs):
+        subject = 'Package updates available for %s' % socket.gethostname()
+        lines = ["%d package updates available:\n" % len(pkgs)]
+        for pkg in sorted(pkgs):
+            current = self.get_package(pkg)
+            lines.append(pkg.name)
+            lines.append('  Summary: %s' % pkg.summary)
+            lines.append('  Current: %s' % current.printVer())
+            lines.append('  Available: %s' % pkg.printVer())
+
+            if self.options.changelog:
+                lines.append('  Changelog: %s' % self.get_changelog(pkg))
+
+        body = '\n'.join(lines)
+
+        if self.options.mailto:
+            self.notify_mail(self.options.mailto, body, subject)
+        else:
+            echo(body)
+
+    def notify_mail(self, mailto, body, subject):
+        msg = MIMEText(body)
+        msg['To'] = mailto
+        msg['Subject'] = subject
+        # TODO don't hardcode this?
+        # RHEL 5+ all have sendmail here so this seems OK for now
+        cmd = ['/usr/sbin/sendmail', '-t', '-oi']
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+        proc.communicate(msg.as_string())
+
+    def run(self):
+        updates = self.get_updates()
+        if updates:
+            self.notify(updates)
+
+
+def main():
+    yn = YumNotify()
+    yn.run()
+
+
+if __name__ == '__main__':
+    main()
